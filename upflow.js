@@ -1,8 +1,8 @@
-/** upflow -- Flowing markdown upstream 
-    By Troels Knak-Nielsen <http://github.com/troelskn/> 
+/** upflow -- Flowing markdown upstream
+    By Troels Knak-Nielsen <http://github.com/troelskn/>
     MIT license
  */
-upflow = {};
+var upflow = {};
 
 // some utilities
 upflow.escapeHtml = function(text) {
@@ -182,17 +182,40 @@ upflow.Canvas.prototype.appendBlock = function(block, deferUpdate) {
 };
 
 upflow.Canvas.prototype.insertBlockAfter = function(block, relative, deferUpdate) {
-  if (relative.nextSibling) {
-    this.container.insertBefore(block.container, relative.nextSibling);
+  if (relative.container && relative.container.nextSibling) {
+    this.container.insertBefore(block.container, relative.container.nextSibling);
   } else {
     this.container.appendChild(block.container);
   }
-  this.own(block, deferUpdate);
+  //this.own(block, deferUpdate);
+  block.owner = this;
+  var tmp = [];
+  for (var ii = 0, ll = this.blocks.length; ii < ll; ii++) {
+    tmp.push(this.blocks[ii]);
+    if (this.blocks[ii] == relative) {
+      tmp.push(block);
+    }
+  }
+  this.blocks = tmp;
+  if (!deferUpdate) {
+    this.updateContentField();
+  }
 };
 
 upflow.Canvas.prototype.insertBlockBefore = function(block, relative, deferUpdate) {
-  this.container.insertBefore(block.container, relative);
-  this.own(block, deferUpdate);
+  this.container.insertBefore(block.container, relative.container);
+  //this.own(block, deferUpdate);
+  var tmp = [];
+  for (var ii = 0, ll = this.blocks.length; ii < ll; ii++) {
+    if (this.blocks[ii] == relative) {
+      tmp.push(block);
+    }
+    tmp.push(this.blocks[ii]);
+  }
+  this.blocks = tmp;
+  if (!deferUpdate) {
+    this.updateContentField();
+  }
 };
 
 upflow.Canvas.prototype.removeBlock = function(block) {
@@ -222,10 +245,14 @@ upflow.Canvas.prototype.getPreviousBlock = function(block) {
   }
 };
 
+upflow.Canvas.prototype.onMouseMoveBlock = function(block, mousePosition) {};
+upflow.Canvas.prototype.onMouseOverBlock = function(block) {};
+upflow.Canvas.prototype.onActivateBlock = function(block) {};
+
 upflow.bindKeyListeners = function(block) {
   var element = block.input;
   element.onkeypress = function(e) {
-    if (!e) {var e = window.event;}
+    if (!e) {e = window.event;}
     if (e.keyCode) {var code = e.keyCode;}
     else if (e.which) {var code = e.which;}
     if (code == 27) {
@@ -269,6 +296,112 @@ upflow.addFilter(
   }
 );
 
+upflow.getElementDimensions = function(elem) {
+  if (typeof(elem.w) == 'number' || typeof(elem.h) == 'number') {
+    return {w: elem.w || 0, h: elem.h || 0};
+  }
+  if (!elem) {
+    return undefined;
+  }
+  if (elem.display != 'none') {
+    return {w: elem.offsetWidth || 0, h: elem.offsetHeight || 0};
+  }
+  var s = elem.style;
+  var originalVisibility = s.visibility;
+  var originalPosition = s.position;
+  s.visibility = 'hidden';
+  s.position = 'absolute';
+  s.display = '';
+  var originalWidth = elem.offsetWidth;
+  var originalHeight = elem.offsetHeight;
+  s.display = 'none';
+  s.position = originalPosition;
+  s.visibility = originalVisibility;
+  return {w: originalWidth, h: originalHeight};
+};
+
+upflow.getElementPosition = function(obj) {
+  var curleft = 0;
+  var curtop = 0;
+  if (obj.offsetParent) {
+    curleft = obj.offsetLeft;
+    curtop = obj.offsetTop;
+    while ((obj = obj.offsetParent)) {
+      curleft += obj.offsetLeft;
+      curtop += obj.offsetTop;
+    }
+  }
+  return {x: curleft, y: curtop};
+};
+
+upflow.startMove = function(block) {
+  var targetBlock = block.previousSiblingBlock();
+  var orientation = 'before';
+  if (!targetBlock) {
+    targetBlock = block.nextSiblingBlock();
+    orientation = 'after';
+    if (!targetBlock) {
+      throw new Error("Can't move only block");
+    }
+  }
+  var positionBefore = function(block) {
+    if (targetBlock == block && orientation == 'before') {
+      return;
+    }
+    orientation = 'before';
+    targetBlock = block;
+    container.parentNode.removeChild(container);
+    block.container.parentNode.insertBefore(container, block.container);
+  };
+  var positionAfter = function(block) {
+    if (targetBlock == block && orientation == 'after') {
+      return;
+    }
+    orientation = 'after';
+    targetBlock = block;
+    container.parentNode.removeChild(container);
+    // insertAfter
+    if (block.container.nextSibling) {
+      block.container.parentNode.insertBefore(container, block.container.nextSibling);
+    } else {
+      block.container.parentNode.appendChild(container);
+    }
+  };
+  var blockToMove = block;
+  var container = document.createElement("div");
+  container.className = "upflow-preview upflow-ghost";
+  container.title = "Click to drop";
+  container.innerHTML = blockToMove.preview.innerHTML;
+  //container.style.height = upflow.getElementDimensions(blockToMove.container).h + 'px';
+  blockToMove.container.parentNode.insertBefore(container, blockToMove.container);
+  blockToMove.container.style.display = "none";
+  blockToMove.owner.onMouseMoveBlock = function(block, mousePosition) {
+    var splity = upflow.getElementPosition(block.container).y + (upflow.getElementDimensions(block.container).h / 2);
+    if (mousePosition().y > splity) {
+      positionAfter(block);
+    } else {
+      positionBefore(block);
+    }
+  };
+  var cleanup = function() {
+    blockToMove.owner.onMouseMoveBlock = function(block, mousePosition) {};
+    blockToMove.owner.onActivateBlock = function(block) {};
+    container.parentNode.removeChild(container);
+    blockToMove.container.style.display = "";
+  };
+  blockToMove.owner.onActivateBlock = function(block) {
+    cleanup();
+  };
+  container.onclick = function() {
+    cleanup();
+    if (orientation == 'before') {
+      targetBlock.owner.insertBlockBefore(blockToMove, targetBlock, false);
+    } else {
+      targetBlock.owner.insertBlockAfter(blockToMove, targetBlock, false);
+    }
+  };
+};
+
 // markdown -> chunks
 upflow.parseToTokens = function(text) {
   return upflow.splitString(
@@ -290,8 +423,8 @@ upflow.roundTrip = function(block) {
   if (owner == null) {
     throw new Error("owner is null");
   }
-  var previousSibling = block.container.previousSibling;
-  var nextSibling = block.container.nextSibling;
+  var previousSibling = block.previousSiblingBlock();
+  var nextSibling = block.nextSiblingBlock();
   block.removeBlock();
   for (var i in tokens) {
     var newblock = upflow.createBlock(tokens[i]);
@@ -302,7 +435,7 @@ upflow.roundTrip = function(block) {
     } else {
       owner.appendBlock(newblock, true);
     }
-    previousSibling = newblock.container;
+    previousSibling = newblock;
   }
   owner.updateContentField();
   return true;
@@ -313,8 +446,25 @@ upflow.createBlock = function(initialValue) {
   block.initialValue = initialValue;
   block.container = document.createElement("div");
   block.container.className = "upflow-container";
+  block.container.onmousemove = function(e) {
+    if (!e) {e = window.event;}
+    var mousePosition = function() {
+      var posx = 0;
+      var posy = 0;
+      if (e.pageX || e.pageY) 	{
+        posx = e.pageX;
+        posy = e.pageY;
+      } else if (e.clientX || e.clientY) 	{
+        posx = e.clientX + document.body.scrollLeft + document.documentElement.scrollLeft;
+        posy = e.clientY + document.body.scrollTop + document.documentElement.scrollTop;
+      }
+      return {x: posx, y: posy};
+    };
+    block.owner.onMouseMoveBlock(block, mousePosition);
+  };
   block.container.onmouseover = function() {
     block.container.className = "upflow-container-hover";
+    block.owner.onMouseOverBlock(block);
   };
   block.container.onmouseout = function() {
     block.container.className = "upflow-container";
@@ -329,6 +479,7 @@ upflow.createBlock = function(initialValue) {
 
   block.input = document.createElement("textarea");
   block.input.className = "upflow-editor";
+  block.input.tabIndex = 2;
   block.input.value = typeof(initialValue) == "undefined" ? "" : initialValue;
   // resize textfield to match content
   var lastValue = null;
@@ -358,12 +509,29 @@ upflow.createBlock = function(initialValue) {
   var createEventHandler = function(handler) {
     return function(e) {
       handler();
-      if (!e) {var e = window.event;}
+      if (!e) {e = window.event;}
       e.cancelBubble = true;
       if (e.stopPropagation) {e.stopPropagation();}
       return false;
     };
   };
+
+  // toolbar -> Insert
+  block.insertButton = document.createElement("a");
+  block.insertButton.href = "#";
+  block.insertButton.title = "Click to insert a new block of text following this";
+  block.insertButton.className = "upflow-action";
+  block.insertButton.innerHTML = "Insert";
+  toolbar.appendChild(block.insertButton);
+  block.insertButton.onclick = createEventHandler(
+    function() {
+      var newblock = upflow.createBlock('');
+      block.owner.insertBlockAfter(newblock, block, false);
+      newblock.focus();
+    });
+
+  // toolbar -> Separator
+  toolbar.appendChild(document.createTextNode(" : "));
 
   // toolbar -> Delete
   block.deleteButton = document.createElement("a");
@@ -386,15 +554,14 @@ upflow.createBlock = function(initialValue) {
   // toolbar -> Move
   block.moveButton = document.createElement("a");
   block.moveButton.href = "#";
-  block.moveButton.title = "Click to move this block up/down. (Not yet implemented)";
+  block.moveButton.title = "Click to move this block up/down.";
   block.moveButton.className = "upflow-action";
   block.moveButton.innerHTML = "Move";
   toolbar.appendChild(block.moveButton);
   block.moveButton.onclick = createEventHandler(
     function() {
-      cancelBlur();
-      if (!block.isOnlyBlock()) {
-        alert("todo: toolbar -> Move");
+      if (!block.isOnlyBlock() && !block.isBlank()) {
+        upflow.startMove(block);
       }
     });
 
@@ -418,8 +585,10 @@ upflow.createBlock = function(initialValue) {
   block.preview = document.createElement("div");
   block.preview.className = "upflow-preview";
   block.preview.title = "Click to edit";
-  block.preview.onclick = createEventHandler(
+  block.preview.tabIndex = 2;
+  block.preview.onfocus = createEventHandler(
     function() {
+      block.owner.onActivateBlock(block);
       block.focus();
     });
 
@@ -452,7 +621,7 @@ upflow.Block.prototype.setHtml = function(html) {
 };
 
 upflow.Block.prototype.onblur = function() {
-  if (this.input.value.replace(/\s/g, "") == "") {
+  if (this.isBlank()) {
     if (this.isOnlyBlock()) {
       return;
     }
@@ -466,6 +635,10 @@ upflow.Block.prototype.onblur = function() {
     this.owner.updateContentField();
   }
   this.setHtml(this.toHtml());
+};
+
+upflow.Block.prototype.isBlank = function() {
+  return this.input.value.replace(/\s/g, "") == "";
 };
 
 upflow.Block.prototype.blur = function() {
